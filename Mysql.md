@@ -25,9 +25,9 @@ MySQL是一个单进程多线程的数据库，MySQL数据库实例在系统上�
 
 配置参数中有一个datadir，该参数指定了数据库所在路径。`show variables like 'datadir';`
 
-![datadir](C:%5CUsers%5CDXY%5CDesktop%5Cnote%5Cimg%5Cimage-20211209222311943.png)
+![image-20211211152045773](https://dxytoll-img-1304942391.cos.ap-nanjing.myqcloud.com/img/image-20211211152045773.png)
 
-### MySQL体系结构
+### 1.2 MySQL体系结构
 
 * 数据库：文件的集合，是依照某种数据模型组织起来并存放于二级储存器中的数据集合
 * 数据库实例：是程序，是位于用户和操作系统之间的一层数据管理软件
@@ -51,4 +51,117 @@ MySQL是一个单进程多线程的数据库，MySQL数据库实例在系统上�
 
 插件式的存储引擎架构提供了一系列标准管理和服务支持，这些与存储引擎本身无关。存储引擎是底层物理机构的实现，每个储存引擎开发者可以按照自己的意愿开发。
 
-> 公司的new sql就是
+> 公司的new sql就是重写了innodb引擎
+
+**储存引擎是基于表的，不是基于数据库的**
+
+### 1.3 MySQL储存引擎
+
+#### 1.3.1 Innodb
+
+* 支持事务，行锁设计，支持外键，默认读取不会产生锁
+* 5.5.8之后，innodb成为默认储存引擎
+* 他将数据放在一盒逻辑表空间里，表空间有innodb自身管理，从4.1开始每个表单独放到一个独立的idb文件中。
+* 同时innodb支持用裸设备（row disk）用来建立其表空间
+* 使用多版本并发控制（MVCC）来获取高并发性
+* 实现四种隔离级别，默认为REPEATABLE
+* 使用next-key locking 策略来避免幻读
+* 提供插入缓冲（insert buffer）、二次写（double write）、自适应哈希（adaptive hash）、预读（read ahead）等功能
+* 数据存储采用聚集（clustered）的方式，每张表按照主键顺序存放。**如果没有显式定义主键，会为每一行生成一个6字节的ROWID作为主键**
+
+#### 1.3.2 MyISAM
+
+* 不支持事务、表锁设计，支持全文索引
+* 5.5.8之前是mysql的默认存储引擎（windows除外）
+* 缓冲池值缓存（cache）索引文件，不缓存数据文件，**数据文件的缓存交给os**
+* 组成：由MYD和MYI组成，MDY储存数据文件，MYI储存索引文件。可以用myisampack进一步压缩数据文件（myisampack用Huffman编码静态压缩，压缩后为只读，也可解压数据文件）
+* 5.0之前，默认支持的表大小为4GB，如果需要支持大于4GB，需要指定`MAX_ROWS`和`AVG_ROW_LENGTH`属性。5.0之后默认支持256TB的单表数据
+* 5.1.23之前，无论32位还是64位，缓冲区最大支持4GB，之后版本64位可以支持大于4GB的索引缓冲区
+
+#### 1.3.3 NDB
+
+* 是一个集群存储引擎，其结构是share nothing
+* 数据全部在内存中（5.1之开始非索引文件可以放在磁盘上），主键查找极快
+* 添加NDB数据存储节点（Data Node）可以线性提高数据库性能
+* 连接操作（JOIN）是在数据库层完成的，不是在储存引擎完成的，复杂的连接操作查询速度很慢
+
+#### 1.3.4 Memory(之前称为HEAP)
+
+* 将表中的数据存放在内存中，db重启或崩溃后，数据丢失
+* 默认使用hash索引
+* 只支持表锁，并发性能差
+* 不支持TEXT和BLOB列类型，储存varchar使用char的方式，浪费空间
+* **mysql使用memory作为临时表存放查询的中间结果集**。如果中间结果大于memory容量或者包含TEXT和BLOB，会自动转为myisam，因为myisam不缓存数据文件，性能会有损失
+
+#### 1.3.5 Archive
+
+* 只支持INSTER和SELECT操作
+* 5.1之后支持索引
+* 使用zlib算法将数据行（row）压缩后储存，压缩比一般为1:10。
+* 使用行锁实现高并发的插入操作，本事并不是事务安全的储存引擎
+* 适合于储存归档数据，提供告诉的插入和压缩功能
+
+#### 1.3.6 Federated
+
+* 只是指向remote MYSQL服务器上的表。
+
+#### 1.3.7 Maria
+
+* 可以看做MyIsam的后续版本
+* 支持缓存数据和索引文件，应用了行锁设计，提供MVCC功能，支持事务和非事务安全的选项，以及更好的BLOB字符类型的处理性能
+
+### 1.4 各储存引擎的比较
+
+| 特点 feature                                                 | MyISAM   | BDB     | MEMORY   | Innodb | Archive   | NDB    |
+| ------------------------------------------------------------ | -------- | ------- | -------- | ------ | --------- | ------ |
+| 储存限制 storage limits                                      | no       | no      | yes      | 64tb   | no        | yes    |
+| 事务 transaction(commit, rollback, etc.)                     |          | √       |          | √      |           |        |
+| 锁粒度 locking granularity                                   | 表 table | 页 page | 表 table | 行 row | 行 row    | 行 row |
+| mvcc/快照读取 MVCC/snapshot read                             |          |         |          | √      | √         | √      |
+| 地理空间支持（网上相关资料较少） geospatial support          | √        |         |          |        |           |        |
+| b树索引 B-Tree indexes                                       | √        | √       | √        | √      |           | √      |
+| 哈希索引 hash indexes                                        |          |         | √        | √      |           | √      |
+| 全文检索索引 full text search index                          | √        |         |          |        |           |        |
+| 聚簇索引 clustered index                                     |          |         |          | √      |           |        |
+| 数据缓存 data caches                                         |          |         | √        | √      |           | √      |
+| 索引缓存 index caches                                        | √        |         | √        | √      |           | √      |
+| 数据压缩 compressed data                                     | √        |         |          |        | √         |        |
+| 通过函数加密数据 encrypted data(via function)                | √        | √       | √        | √      | √         | √      |
+| 储存成本（空间使用） storage cost(space used)                | low      | low     | N/A      | high   | very low  | low    |
+| 内存成本 memory cost                                         | low      | low     | medium   | high   | low       | high   |
+| 批量插入速度 bulk insert speed                               | high     | high    | high     | low    | very high | high   |
+| 集群db支持 cluster database support                          |          |         |          |        |           | √      |
+| 复制支持 replication support                                 | √        | √       | √        | √      | √         | √      |
+| 外键支持 foreign key support                                 |          |         |          | √      |           |        |
+| 备份/时间点恢复 backup/point-in-time recovery                | √        | √       | √        | √      | √         | √      |
+| 查询缓存支持 query cache support                             | √        | √       | √        | √      | √         | √      |
+| 更新数据字典的统计信息 update statistics for data dictionary | √        | √       | √        | √      | √         | √      |
+
+可以使用`show engines`语句查询当前数据支持的储存引擎，或者是`information_schema.ENGINES`![image-20211211152128110](https://dxytoll-img-1304942391.cos.ap-nanjing.myqcloud.com/img/image-20211211152128110.png)![image-20211211151218492](https://dxytoll-img-1304942391.cos.ap-nanjing.myqcloud.com/img/image-20211211151218492.png)
+
+### 1.5 连接MySQL
+
+#### 1.5.1 TCP/IP
+
+* mysql在任意平台下都提供的方法
+
+```shell
+mysql -h[ip] -u username -p pwd
+```
+
+![image-20211211151855390](C:%5CUsers%5CDXY%5CDesktop%5Cnote%5Cimg%5Cimage-20211211151855390.png)
+
+* 使用tcp/ip连接时，mysql会先查询一张权限视图，用来发起请求的客户端ip是否允许允许连接到实例，视图在mysql架构下的user表![image-20211211153037839](https://dxytoll-img-1304942391.cos.ap-nanjing.myqcloud.com/img/image-20211211153037839.png)
+
+#### 1.5.2 命名管道和共享内存
+
+* 在windows 2000以上平台，如果两个需要进程通信的进程在同一台服务器，可以使用命名管道。
+* mysql需要在配置文件中启用`--enable-named-pipe`
+* 在4.1之后，mysql还提供共享内存连接的方法，需要在配置文件天极爱`--share-memory`。如果想使用共享内存，还需要在mysql客户端使用`--protocol-memory`选项
+
+#### 1.5.3 UNIX域套接字
+
+* 在Linux和UNIX环境下使用
+* 只能在mysql客户端和数据库实例在一太服务器上的情况下使用
+* 需要在配置文件中指定套接字的路径，eg:`--socket=/tmp/mysql.sock`
+

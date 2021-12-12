@@ -1,143 +1,432 @@
 # redis
 
-## 命令
+## 第一章 字符串
 
-### 基本语法
+### 1.1 redisObject
 
-* 启动客户端
+Redis中数据对象 server.h/redisObject 是对内部储存数据定义的抽象类型
 
-```shell
-reeis-cli
+```c
+//server.h/redisObject
+#define LRU_BITS 24
+typedef struct redisObject {
+    unsigned type:4; 
+    unsigned encoding:4; 
+    unsigned lru:LRU_BITS; /* LRU time (relative to global lru_clock) or
+                            * LFU data (least significant 8 bits frequency
+                            * and most significant 16 bits access time). */
+    int refcount;
+    void *ptr;
+} robj;
 ```
 
-* 远程操作
+* type：数据类型
+* encoding：编码格式，即储存数据使用的数据结构。同一个类型的数据，Redis会根据数据量、占用内存等情况使用不同的编码，最大限度的节省内存
+* refcount：应用计数，为了节省内存，Redis会在多出应用同一个redisObject
+* ptr：指向实际的数据结构，如sds，真正的数据储存在该数据结构中
+* lru：24位，LRU时间戳或LFU计数
 
-```shell
-redis-cli -h host -p port -a password
+redisObject负责装载所有的键和值，redisObject.ptr指向真正储存数据的数据结构，redisObject.refcount、redisObject.lru等属性则用于管理数据（数据共享，数据过期）
+
+### 1.2 sds
+
+redis扩展了c语言的字符串，定义了sds（Simple Dynamic String）。redis所有的key都是string
+
+#### 1.2.1 定义
+
+```c
+// sds.h
+typedef char *sds;
+
+/* Note: sdshdr5 is never used, we just access the flags byte directly.
+ * However is here to document the layout of type 5 SDS strings. */
+/*注意：sdshdr5 从未使用过，我们只是直接访问标志字节。
+  然而，这里是为了记录类型 5 SDS 字符串的布局。  */
+struct __attribute__ ((__packed__)) sdshdr5 {
+    unsigned char flags; /* 3 lsb of type, and 5 msb of string length */
+    char buf[];
+};
+struct __attribute__ ((__packed__)) sdshdr8 {
+    uint8_t len; /* used */
+    uint8_t alloc; /* excluding the header and null terminator */
+    unsigned char flags; /* 3 lsb of type, 5 unused bits */
+    char buf[];
+};
+struct __attribute__ ((__packed__)) sdshdr16 {
+    uint16_t len; /* used */
+    uint16_t alloc; /* excluding the header and null terminator */
+    unsigned char flags; /* 3 lsb of type, 5 unused bits */
+    char buf[];
+};
+struct __attribute__ ((__packed__)) sdshdr32 {
+    uint32_t len; /* used */
+    uint32_t alloc; /* excluding the header and null terminator */
+    unsigned char flags; /* 3 lsb of type, 5 unused bits */
+    char buf[];
+};
+struct __attribute__ ((__packed__)) sdshdr64 {
+    uint64_t len; /* used */
+    uint64_t alloc; /* excluding the header and null terminator */
+    unsigned char flags; /* 3 lsb of type, 5 unused bits */
+    char buf[];
+};
 ```
 
-### 键（KEY）操作
+sdshdr针对不同的长度，定义不同的len和alloc，最大可能的节省内存
 
-| 1    | [DEL key](https://www.w3cschool.cn/redis/keys-del.html) 该命令用于在 key 存在时删除 key。 |
-| ---- | ------------------------------------------------------------ |
-| 2    | [DUMP key](https://www.w3cschool.cn/redis/keys-dump.html) 序列化给定 key ，并返回被序列化的值。<br /> |
-| 3    | [EXISTS key](https://www.w3cschool.cn/redis/keys-exists.html) 检查给定 key 是否存在。 |
-| 4    | [EXPIRE key](https://www.w3cschool.cn/redis/keys-expire.html) seconds 为给定 key 设置过期时间。 |
-| 5    | [EXPIREAT key timestamp](https://www.w3cschool.cn/redis/keys-expireat.html) EXPIREAT 的作用和 EXPIRE 类似，都用于为 key 设置过期时间。 不同在于 EXPIREAT 命令接受的时间参数是 UNIX 时间戳(unix timestamp)。 |
-| 6    | [PEXPIRE key milliseconds](https://www.w3cschool.cn/redis/keys-pexpire.html) 设置 key 的过期时间以毫秒计。 |
-| 7    | [PEXPIREAT key milliseconds-timestamp](https://www.w3cschool.cn/redis/keys-pexpireat.html) 设置 key 过期时间的时间戳(unix timestamp) 以毫秒计 |
-| 8    | [KEYS pattern](https://www.w3cschool.cn/redis/keys-keys.html) 查找所有符合给定模式( pattern)的 key 。![image-20210914163118289](https://dxytoll-img-1304942391.cos.ap-nanjing.myqcloud.com/img/2021-09-14 16:31:23-image-20210914163118289-da0c9731c1faf831825a5178650d6242.png) |
-| 9    | [MOVE key db](https://www.w3cschool.cn/redis/keys-move.html) 将当前数据库的 key 移动到给定的数据库 db 当中。 |
-| 10   | [PERSIST key](https://www.w3cschool.cn/redis/keys-persist.html) 移除 key 的过期时间，key 将持久保持。 |
-| 11   | [PTTL key](https://www.w3cschool.cn/redis/keys-pttl.html) 以毫秒为单位返回 key 的剩余的过期时间。 |
-| 12   | [TTL key](https://www.w3cschool.cn/redis/keys-ttl.html) 以秒为单位，返回给定 key 的剩余生存时间(TTL, time to live)。 |
-| 13   | [RANDOMKEY](https://www.w3cschool.cn/redis/keys-randomkey.html) 从当前数据库中随机返回一个 key 。 |
-| 14   | [RENAME key newkey](https://www.w3cschool.cn/redis/keys-rename.html) 修改 key 的名称 |
-| 15   | [RENAMENX key newkey](https://www.w3cschool.cn/redis/keys-renamenx.html) 仅当 newkey 不存在时，将 key 改名为 newkey 。 |
-| 16   | [TYPE key](https://www.w3cschool.cn/redis/keys-type.html) 返回 key 所储存的值的类型。 |
+* len：已使用字节长度，即字符串长度。sdshdr n 可以储存 2^n的数据。最大长度为512MB。获取字符长度为o(1)
+* alloc：申请的长度，空闲时间为`len- alloc`
+* flag：低3位表示sdshdr的类型，高5位只在sdshdr5中使用，表示字符串的长度，所以sdshdr5没有len属性。另外，Redis对sdshdr5定义是常量字符串，不支持扩容，不存在alloc属性。
+* buf：字符串内容，sds祖先c语言字符串规范，保存一个空字符作为buf结尾，并不计入len、alloc属性中。可以直接使用strcmp和strcpy直接操作sds
 
-### string
+#### 1.2.2 操作分析
 
-| 1    | [SET key value](https://www.w3cschool.cn/redis/strings-set.html) 设置指定 key 的值 |
-| ---- | ------------------------------------------------------------ |
-| 2    | [GET key](https://www.w3cschool.cn/redis/strings-get.html) 获取指定 key 的值。 |
-| 3    | [GETRANGE key start end](https://www.w3cschool.cn/redis/strings-getrange.html) 返回 key 中字符串值的子字符![image-20210914163206226](https://dxytoll-img-1304942391.cos.ap-nanjing.myqcloud.com/img/2021-09-14 16:32:06-image-20210914163206226-538eb6de1438138d7be8d9c7a97e84e8.png) |
-| 4    | [GETSET key value](https://www.w3cschool.cn/redis/strings-getset.html) 将给定 key 的值设为 value ，并返回 key 的旧值(old value)。 |
-| 5    | [GETBIT key offset](https://www.w3cschool.cn/redis/strings-getbit.html) 对 key 所储存的字符串值，获取指定偏移量上的位(bit)。 |
-| 6    | [MGET key1 [key2..\]](https://www.w3cschool.cn/redis/strings-mget.html) 获取所有(一个或多个)给定 key 的值。 |
-| 7    | [SETBIT key offset value](https://www.w3cschool.cn/redis/strings-setbit.html) 对 key 所储存的字符串值，设置或清除指定偏移量上的位(bit)。 |
-| 8    | [SETEX key seconds value](https://www.w3cschool.cn/redis/strings-setex.html) 将值 value 关联到 key ，并将 key 的过期时间设为 seconds (以秒为单位)。 |
-| 9    | [SETNX key value](https://www.w3cschool.cn/redis/strings-setnx.html) 只有在 key 不存在时设置 key 的值。 |
-| 10   | [SETRANGE key offset value](https://www.w3cschool.cn/redis/strings-setrange.html) 用 value 参数覆写给定 key 所储存的字符串值，从偏移量 offset 开始。 |
-| 11   | [STRLEN key](https://www.w3cschool.cn/redis/strings-strlen.html) 返回 key 所储存的字符串值的长度。 |
-| 12   | [MSET key value [key value ...\]](https://www.w3cschool.cn/redis/strings-mset.html) 同时设置一个或多个 key-value 对。 |
-| 13   | [MSETNX key value [key value ...\]](https://www.w3cschool.cn/redis/strings-msetnx.html) 同时设置一个或多个 key-value 对，当且仅当所有给定 key 都不存在。 |
-| 14   | [PSETEX key milliseconds value](https://www.w3cschool.cn/redis/strings-psetex.html) 这个命令和 SETEX 命令相似，但它以毫秒为单位设置 key 的生存时间，而不是像 SETEX 命令那样，以秒为单位。 |
-| 15   | [INCR key](https://www.w3cschool.cn/redis/strings-incr.html) 将 key 中储存的数字值增一。<br />1. 如果 key 不存在，那么 key 的值会先被初始化为 0 ，然后再执行 INCRBY 命令。<br />2. 如果值包含错误的类型，或字符串类型的值不能表示为数字，那么返回一个错误。<br />3. 本操作的值限制在 64 位(bit)有符号数字表示之内。 |
-| 16   | [INCRBY key increment](https://www.w3cschool.cn/redis/strings-incrby.html) 将 key 所储存的值加上给定的增量值（increment） 。<br />1. 如果 key 不存在，那么 key 的值会先被初始化为 0 ，然后再执行 INCRBY 命令。<br />2. 如果值包含错误的类型，或字符串类型的值不能表示为数字，那么返回一个错误。<br />3. 本操作的值限制在 64 位(bit)有符号数字表示之内。 |
-| 17   | [INCRBYFLOAT key increment](https://www.w3cschool.cn/redis/strings-incrbyfloat.html) 将 key 所储存的值加上给定的浮点增量值（increment） 。 |
-| 18   | [DECR key](https://www.w3cschool.cn/redis/strings-decr.html) 将 key 中储存的数字值减一。 |
-| 19   | [DECRBY key decrement](https://www.w3cschool.cn/redis/strings-decrby.html) key 所储存的值减去给定的减量值（decrement） 。 |
-| 20   | [APPEND key value](https://www.w3cschool.cn/redis/strings-append.html) 如果 key 已经存在并且是一个字符串， APPEND 命令将 value 追加到 key 原来的值的末尾。 |
+* 构建函数sdsnewlen
 
-### hash
+```c
+sds _sdsnewlen(const void *init, size_t initlen, int trymalloc) {
+    void *sh;//sdshdr
+    sds s;//实际是sdshdr.buf
+    // 获取初始化的长度数据的type
+    char type = sdsReqType(initlen);
+    /* Empty strings are usually created in order to append. Use type 8
+     * since type 5 is not good at this. */
+    // 长度为0的sdshdr5可能要扩容，需要转为sdshdr8
+    if (type == SDS_TYPE_5 && initlen == 0) type = SDS_TYPE_8;
+    int hdrlen = sdsHdrSize(type);//sdshdr.len
+    unsigned char *fp; /* flags pointer. */
+    size_t usable;//sdshdr.alloc
+	
+    assert(initlen + hdrlen + 1 > initlen); /* Catch size_t overflow */
+    // 分配内存，需要多分配一个元素，储存结尾
+    sh = trymalloc?
+        s_trymalloc_usable(hdrlen+initlen+1, &usable) :
+        s_malloc_usable(hdrlen+initlen+1, &usable);
+    if (sh == NULL) return NULL;
+    if (init==SDS_NOINIT)
+        init = NULL;
+    else if (!init)
+        memset(sh, 0, hdrlen+initlen+1);
+    s = (char*)sh+hdrlen;
+    fp = ((unsigned char*)s)-1;
+    usable = usable-hdrlen-1;
+    if (usable > sdsTypeMaxSize(type))
+        usable = sdsTypeMaxSize(type);
+    switch(type) {
+        case SDS_TYPE_5: {
+            // fp第三位储存内容，高5位储存长度
+            *fp = type | (initlen << SDS_TYPE_BITS);
+            break;
+        }
+        case SDS_TYPE_8: {
+            //SDS_HDR_VAR 宏，按长度转换为对应的struct
+            SDS_HDR_VAR(8,s);
+            sh->len = initlen;
+            sh->alloc = usable;
+            *fp = type;
+            break;
+        }
+        case SDS_TYPE_16: {
+            SDS_HDR_VAR(16,s);
+            sh->len = initlen;
+            sh->alloc = usable;
+            *fp = type;
+            break;
+        }
+        case SDS_TYPE_32: {
+            SDS_HDR_VAR(32,s);
+            sh->len = initlen;
+            sh->alloc = usable;
+            *fp = type;
+            break;
+        }
+        case SDS_TYPE_64: {
+            SDS_HDR_VAR(64,s);
+            sh->len = initlen;
+            sh->alloc = usable;
+            *fp = type;
+            break;
+        }
+    }
+    if (initlen && init)
+        memcpy(s, init, initlen);
+    // 结尾符号
+    s[initlen] = '\0';
+    // 返回实际储存的 sdshdr.buf
+    return s;
+}
 
-| 1    | [HDEL key field2 [field2\]](https://www.w3cschool.cn/redis/hashes-hdel.html) 删除一个或多个哈希表字段 |
-| ---- | ------------------------------------------------------------ |
-| 2    | [HEXISTS key field](https://www.w3cschool.cn/redis/hashes-hexists.html) 查看哈希表 key 中，指定的字段是否存在。 |
-| 3    | [HGET key field](https://www.w3cschool.cn/redis/hashes-hget.html) 获取存储在哈希表中指定字段的值 |
-| 4    | [HGETALL key](https://www.w3cschool.cn/redis/hashes-hgetall.html) 获取在哈希表中指定 key 的所有字段和值 |
-| 5    | [HINCRBY key field increment](https://www.w3cschool.cn/redis/hashes-hincrby.html) 为哈希表 key 中的指定字段的整数值加上增量 increment 。 |
-| 6    | [HINCRBYFLOAT key field increment](https://www.w3cschool.cn/redis/hashes-hincrbyfloat.html) 为哈希表 key 中的指定字段的浮点数值加上增量 increment 。 |
-| 7    | [HKEYS key](https://www.w3cschool.cn/redis/hashes-hkeys.html) 获取所有哈希表中的字段 |
-| 8    | [HLEN key](https://www.w3cschool.cn/redis/hashes-hlen.html) 获取哈希表中字段的数量 |
-| 9    | [HMGET key field1 (field2)](https://www.w3cschool.cn/redis/hashes-hmget.html) 获取所有给定字段的值 |
-| 10   | [HMSET key field1 value1 (field2 value2 )](https://www.w3cschool.cn/redis/hashes-hmset.html) 同时将多个 field-value (域-值)对设置到哈希表 key 中。 |
-| 11   | [HSET key field value](https://www.w3cschool.cn/redis/hashes-hset.html) 将哈希表 key 中的字段 field 的值设为 value 。 |
-| 12   | [HSETNX key field value](https://www.w3cschool.cn/redis/hashes-hsetnx.html) 只有在字段 field 不存在时，设置哈希表字段的值。 |
-| 13   | [HVALS key](https://www.w3cschool.cn/redis/hashes-hvals.html) 获取哈希表中所有值 |
-| 14   | HSCAN key cursor [MATCH pattern] [COUNT count] 迭代哈希表中的键值对。 |
+sds sdsnewlen(const void *init, size_t initlen) {
+    return _sdsnewlen(init, initlen, 0);
+}
+```
 
-### list
+* 扩容sdsMakeRoomFor
 
-| 1    | [BLPOP key1 [key2 \] timeout](https://www.w3cschool.cn/redis/lists-blpop.html) 移出并获取列表的第一个元素， 如果列表没有元素会阻塞列表直到等待超时或发现可弹出元素为止。 |
-| ---- | ------------------------------------------------------------ |
-| 2    | [BRPOP key1 [key2 \] timeout](https://www.w3cschool.cn/redis/lists-brpop.html) 移出并获取列表的最后一个元素， 如果列表没有元素会阻塞列表直到等待超时或发现可弹出元素为止。 |
-| 3    | [BRPOPLPUSH source destination timeout](https://www.w3cschool.cn/redis/lists-brpoplpush.html) 从列表中弹出一个值，将弹出的元素插入到另外一个列表中并返回它； 如果列表没有元素会阻塞列表直到等待超时或发现可弹出元素为止。 |
-| 4    | [LINDEX key index](https://www.w3cschool.cn/redis/lists-lindex.html) 通过索引获取列表中的元素 |
-| 5    | [LINSERT key BEFORE\|AFTER pivot value](https://www.w3cschool.cn/redis/lists-linsert.html) 在列表的元素前或者后插入元素 |
-| 6    | [LLEN key](https://www.w3cschool.cn/redis/lists-llen.html) 获取列表长度 |
-| 7    | [LPOP key](https://www.w3cschool.cn/redis/lists-lpop.html) 移出并获取列表的第一个元素 |
-| 8    | [LPUSH key value1 [value2\]](https://www.w3cschool.cn/redis/lists-lpush.html) 将一个或多个值插入到列表头部 |
-| 9    | [LPUSHX key value](https://www.w3cschool.cn/redis/lists-lpushx.html) 将一个或多个值插入到已存在的列表头部 |
-| 10   | [LRANGE key start stop](https://www.w3cschool.cn/redis/lists-lrange.html) 获取列表指定范围内的元素 |
-| 11   | [LREM key count value](https://www.w3cschool.cn/redis/lists-lrem.html) 移除列表元素 |
-| 12   | [LSET key index value](https://www.w3cschool.cn/redis/lists-lset.html) 通过索引设置列表元素的值 |
-| 13   | [LTRIM key start stop](https://www.w3cschool.cn/redis/lists-ltrim.html) 对一个列表进行修剪(trim)，就是说，让列表只保留指定区间内的元素，不在指定区间之内的元素都将被删除。 |
-| 14   | [RPOP key](https://www.w3cschool.cn/redis/lists-rpop.html) 移除并获取列表最后一个元素 |
-| 15   | [RPOPLPUSH source destination](https://www.w3cschool.cn/redis/lists-rpoplpush.html) 移除列表的最后一个元素，并将该元素添加到另一个列表并返回 |
-| 16   | [RPUSH key value1 [value2\]](https://www.w3cschool.cn/redis/lists-rpush.html) 在列表中添加一个或多个值 |
-| 17   | [RPUSHX key value](https://www.w3cschool.cn/redis/lists-rpushx.html) 为已存在的列表添加值 |
+```c
+// sds.c
+#define SDS_MAX_PREALLOC (1024*1024)
+...
+sds _sdsMakeRoomFor(sds s, size_t addlen, int greedy) {
+    // sds就是buf的首元素
+    void *sh, *newsh;
+    size_t avail = sdsavail(s); // 算出空余字符
+    size_t len, newlen, reqlen;
+    // 结构体每个成员相对结构体首地址的偏移都是成员大小的整数倍，如不满足，对前一个成员填充字节以满足。
+    // 因为sdshdr使用了__attribute__ ((__packed__))，取消了字节对齐，这里的s是sdshdr.buf所以这里s[-1]实际是指前一个元素sdshdr.flag
+    char type, oldtype = s[-1] & SDS_TYPE_MASK;
+    int hdrlen;
+    size_t usable;
 
-### set
+    /* Return ASAP if there is enough space left. */
+    // 如果有足够的空间，则不扩容
+    if (avail >= addlen) return s;
 
-| 1    | [SADD key member1 [member2\]](https://www.w3cschool.cn/redis/sets-sadd.html) 向集合添加一个或多个成员 |
-| ---- | ------------------------------------------------------------ |
-| 2    | [SCARD key](https://www.w3cschool.cn/redis/sets-scard.html) 获取集合的成员数 |
-| 3    | [SDIFF key1 [key2\]](https://www.w3cschool.cn/redis/sets-sdiff.html) 返回给定所有集合的差集 |
-| 4    | [SDIFFSTORE destination key1 [key2\]](https://www.w3cschool.cn/redis/sets-sdiffstore.html) 返回给定所有集合的差集并存储在 destination 中 |
-| 5    | [SINTER key1 [key2\]](https://www.w3cschool.cn/redis/sets-sinter.html) 返回给定所有集合的交集 |
-| 6    | [SINTERSTORE destination key1 [key2\]](https://www.w3cschool.cn/redis/sets-sinterstore.html) 返回给定所有集合的交集并存储在 destination 中 |
-| 7    | [SISMEMBER key member](https://www.w3cschool.cn/redis/sets-sismember.html) 判断 member 元素是否是集合 key 的成员 |
-| 8    | [SMEMBERS key](https://www.w3cschool.cn/redis/sets-smembers.html) 返回集合中的所有成员 |
-| 9    | [SMOVE source destination member](https://www.w3cschool.cn/redis/sets-smove.html) 将 member 元素从 source 集合移动到 destination 集合 |
-| 10   | [SPOP key](https://www.w3cschool.cn/redis/sets-spop.html) 移除并返回集合中的一个随机元素 |
-| 11   | [SRANDMEMBER key [count\]](https://www.w3cschool.cn/redis/sets-srandmember.html) 返回集合中一个或多个随机数 |
-| 12   | [SREM key member1 [member2\]](https://www.w3cschool.cn/redis/sets-srem.html) 移除集合中一个或多个成员 |
-| 13   | [SUNION key1 [key2\]](https://www.w3cschool.cn/redis/sets-sunion.html) 返回所有给定集合的并集 |
-| 14   | [SUNIONSTORE destination key1 [key2\]](https://www.w3cschool.cn/redis/sets-sunionstore.html) 所有给定集合的并集存储在 destination 集合中 |
-| 15   | [SSCAN key cursor [MATCH pattern\] [COUNT count]](https://www.w3cschool.cn/redis/sets-sscan.html) 迭代集合中的元素 |
+    len = sdslen(s);
+    // 通过sdshdr.buf反推sdshdr，因为sdshdr.buf首元素储存在结构体中，所以buf的首地址就是结构体的结尾
+    sh = (char*)s-sdsHdrSize(oldtype);
+    reqlen = newlen = (len+addlen);
+    assert(newlen > len);   /* Catch size_t overflow */
+    //greedy为1的时候，扩大的需要更多，减少下次重新分配
+    //greedy为0的时候，扩大到足以让addlen有可用空间
+    if (greedy == 1) {
+        // 小于SDS_MAX_PREALLOC，扩容两倍
+        if (newlen < SDS_MAX_PREALLOC)
+            newlen *= 2;
+        // 大于SDS_MAX_PREALLOC，每次扩容SDS_MAX_PREALLOC
+        else
+            newlen += SDS_MAX_PREALLOC;
+    }
+	
+    // 通过newlen计算出新的type
+    type = sdsReqType(newlen);
 
-### zset
+    /* Don't use type 5: the user is appending to the string and type 5 is
+     * not able to remember empty space, so sdsMakeRoomFor() must be called
+     * at every appending operation. */
+    // 机翻：不要使用类型 5：用户附加到字符串并且类型 5 无法记住空白的空间，因此必须在每次附加操作时调用 sdsMakeRoomFor()。 
+    // 将sdshdr5转换为sdshdr8，sdshdr5不支持扩容
+    if (type == SDS_TYPE_5) type = SDS_TYPE_8;
 
-| 1    | [ZADD key score1 member1 [score2 member2\]](https://www.w3cschool.cn/redis/sorted-sets-zadd.html) 向有序集合添加一个或多个成员，或者更新已存在成员的分数 |
-| ---- | ------------------------------------------------------------ |
-| 2    | [ZCARD key](https://www.w3cschool.cn/redis/sorted-sets-zcard.html) 获取有序集合的成员数 |
-| 3    | [ZCOUNT key min max](https://www.w3cschool.cn/redis/sorted-sets-zcount.html) 计算在有序集合中指定区间分数的成员数 |
-| 4    | [ZINCRBY key increment member](https://www.w3cschool.cn/redis/sorted-sets-zincrby.html) 有序集合中对指定成员的分数加上增量 increment |
-| 5    | [ZINTERSTORE destination numkeys key [key ...\]](https://www.w3cschool.cn/redis/sorted-sets-zinterstore.html) 计算给定的一个或多个有序集的交集并将结果集存储在新的有序集合 key 中 |
-| 6    | [ZLEXCOUNT key min max](https://www.w3cschool.cn/redis/sorted-sets-zlexcount.html) 在有序集合中计算指定字典区间内成员数量 |
-| 7    | [ZRANGE key start stop [WITHSCORES\]](https://www.w3cschool.cn/redis/sorted-sets-zrange.html) 通过索引区间返回有序集合成指定区间内的成员 |
-| 8    | [ZRANGEBYLEX key min max [LIMIT offset count\]](https://www.w3cschool.cn/redis/sorted-sets-zrangebylex.html) 通过字典区间返回有序集合的成员 |
-| 9    | [ZRANGEBYSCORE key min max [WITHSCORES\] [LIMIT]](https://www.w3cschool.cn/redis/sorted-sets-zrangebyscore.html) 通过分数返回有序集合指定区间内的成员 |
-| 10   | [ZRANK key member](https://www.w3cschool.cn/redis/sorted-sets-zrank.html) 返回有序集合中指定成员的索引 |
-| 11   | [ZREM key member [member ...\]](https://www.w3cschool.cn/redis/sorted-sets-zrem.html) 移除有序集合中的一个或多个成员 |
-| 12   | [ZREMRANGEBYLEX key min max](https://www.w3cschool.cn/redis/sorted-sets-zremrangebylex.html) 移除有序集合中给定的字典区间的所有成员 |
-| 13   | [ZREMRANGEBYRANK key start stop](https://www.w3cschool.cn/redis/sorted-sets-zremrangebyrank.html) 移除有序集合中给定的排名区间的所有成员 |
-| 14   | [ZREMRANGEBYSCORE key min max](https://www.w3cschool.cn/redis/sorted-sets-zremrangebyscore.html) 移除有序集合中给定的分数区间的所有成员 |
-| 15   | [ZREVRANGE key start stop [WITHSCORES\]](https://www.w3cschool.cn/redis/sorted-sets-zrevrange.html) 返回有序集中指定区间内的成员，通过索引，分数从高到底 |
-| 16   | [ZREVRANGEBYSCORE key max min [WITHSCORES\]](https://www.w3cschool.cn/redis/sorted-sets-zrevrangebyscore.html) 返回有序集中指定分数区间内的成员，分数从高到低排序 |
-| 17   | [ZREVRANK key member](https://www.w3cschool.cn/redis/sorted-sets-zrevrank.html) 返回有序集合中指定成员的排名，有序集成员按分数值递减(从大到小)排序 |
-| 18   | [ZSCORE key member](https://www.w3cschool.cn/redis/sorted-sets-zscore.html) 返回有序集中，成员的分数值 |
-| 19   | [ZUNIONSTORE destination numkeys key [key ...\]](https://www.w3cschool.cn/redis/sorted-sets-zunionstore.html) 计算给定的一个或多个有序集的并集，并存储在新的 key 中 |
-| 20   | [ZSCAN key cursor [MATCH pattern\] [COUNT count]](https://www.w3cschool.cn/redis/sorted-sets-zscan.html) 迭代有序集合中的元素（包括元素成员和元素分值） |
+    // 新长度
+    hdrlen = sdsHdrSize(type);
+    assert(hdrlen + newlen + 1 > reqlen);  /* Catch size_t overflow */
+    if (oldtype==type) {
+        // 新type等于老type，尝试在原有的基础上分配新内存
+        newsh = s_realloc_usable(sh, hdrlen+newlen+1, &usable);
+        if (newsh == NULL) return NULL;
+        s = (char*)newsh+hdrlen;// 通过sdrhdr和hdrlen反推buf，修改指针的偏移量，偏移到buf开始的地方
+    } else {
+        /* Since the header size changes, need to move the string forward,
+         * and can't use realloc */
+        // 因为type发生了变化，需要分配新的内存空间，然后将将老数据迁移
+        newsh = s_malloc_usable(hdrlen+newlen+1, &usable);
+        if (newsh == NULL) return NULL;
+        memcpy((char*)newsh+hdrlen, s, len+1);//复制内容
+        s_free(sh);//释放老数据空间
+        s = (char*)newsh+hdrlen;// 通过sdrhdr和hdrlen反推buf，修改指针的偏移量，偏移到buf开始的地方
+        s[-1] = type;// 修改flag
+        sdssetlen(s, len);//设置长度
+    }
+    // 计算使用的长度，sdshdr.alloc
+    usable = usable-hdrlen-1;
+    if (usable > sdsTypeMaxSize(type))
+        usable = sdsTypeMaxSize(type);
+    sdssetalloc(s, usable);
+    return s;
+}
+
+/* Enlarge the free space at the end of the sds string more than needed,
+ * This is useful to avoid repeated re-allocations when repeatedly appending to the sds. */
+sds sdsMakeRoomFor(sds s, size_t addlen) {
+    return _sdsMakeRoomFor(s, addlen, 1);
+}
+
+/* Unlike sdsMakeRoomFor(), this one just grows to the necessary size. */
+sds sdsMakeRoomForNonGreedy(sds s, size_t addlen) {
+    return _sdsMakeRoomFor(s, addlen, 0);
+}
+```
+
+* 常用函数
+
+| func                                  | 作用                                                  |
+| ------------------------------------- | ----------------------------------------------------- |
+| sdsnew，sdsempty                      | 创建sds                                               |
+| sdsfree，sdsclear，sdsRemoveFreeSpace | 释放sds，清空sds中的字符串的内容，移除sds剩余可用空间 |
+| sdslen                                | 计算sds长度                                           |
+| sdsdup                                | 将指定字符串复制sds中，覆盖原字符串                   |
+| sdscat                                | 给定内容拼接在sds之后                                 |
+| sdscmp                                | 比较是否相同                                          |
+| sdsrange                              | 获取子字符串，并释放其他空间                          |
+
+#### 1.2.3 编码
+
+字符串由3类编码(server.h)
+
+```c
+#define OBJ_ENCODING_RAW 0     /* Raw representation */
+#define OBJ_ENCODING_INT 1     /* Encoded as integer */
+#define OBJ_ENCODING_EMBSTR 8  /* Embedded sds string encoding */
+```
+
+* `OBJ_ENCODING_EMBSTR`：长度小于`OBJ_ENCODING_EMBSTR_SIZE_LIMIT` (44字节，object.c)字符串
+  * redisObject、sds在**连续**的内存块中![image-20211212005026253](https://dxytoll-img-1304942391.cos.ap-nanjing.myqcloud.com/img/image-20211212005026253.png)
+  * `OBJ_ENCODING_EMBSTR`是redis对字符串的优化
+* `OBJ_ENCODING_RAW`：长度大于`OBJ_ENCODING_EMBSTR_SIZE_LIMIT` (44字节，object.c)字符串
+  * redisObject、sds在**不连续**的内存块中
+* `OBJ_ENCODING_INT`：将数值型字符串转换为整形，可以答复降低内存空间。
+  * e.g.：“123456789012”占用12字节，会自动转化为long long，只占用8字节
+
+给redis发请求后，redis会自动解析报文，并将命令参数转换为redisObject。object.c/createStringObject函数完成
+
+```c
+#define OBJ_ENCODING_EMBSTR_SIZE_LIMIT 44
+robj *createStringObject(const char *ptr, size_t len) {
+    if (len <= OBJ_ENCODING_EMBSTR_SIZE_LIMIT)
+        return createEmbeddedStringObject(ptr,len);
+    else
+        return createRawStringObject(ptr,len);
+}
+```
+
+redis将key和value都转换为redisObject之后，再将数据存入数据库
+
+```shell
+> Set Introduction "Redis is an open source (BSD licensed), in-memory data structure store, used as a database, cache and message broker. "
+```
+
+![image-20211212011748127](https://dxytoll-img-1304942391.cos.ap-nanjing.myqcloud.com/img/image-20211212011748127.png)
+
+redis会尝试将准换为`OBJ_ENCODING_INT`，object.c/tryObjectEncoding
+
+```c
+robj *tryObjectEncoding(robj *o) {
+    // robj: redisObject
+    long value;
+    sds s = o->ptr;
+    size_t len;
+
+    /* Make sure this is a string object, the only type we encode
+     * in this function. Other types use encoded memory efficient
+     * representations but are handled by the commands implementing
+     * the type. */
+    // 机翻：确保这是一个字符串对象，我们在这个函数中编码的唯一类型。 其他类型使用编码内存高效表示，但由实现该类型的命令处理。 
+    serverAssertWithInfo(NULL,o,o->type == OBJ_STRING);
+
+    /* We try some specialized encoding only for objects that are
+     * RAW or EMBSTR encoded, in other words objects that are still
+     * in represented by an actually array of chars. */
+    // 机翻：我们仅针对 RAW 或 EMBSTR 编码的对象尝试一些专门的编码，换句话说，仍然由实际的字符数组表示的对象。 
+    // 人话：不对处理int做特殊处理
+    if (!sdsEncodedObject(o)) return o;
+
+    /* It's not safe to encode shared objects: shared objects can be shared
+     * everywhere in the "object space" of Redis and may end in places where
+     * they are not handled. We handle them only as values in the keyspace. */
+    // 机翻：对共享对象进行编码是不安全的：共享对象可以在 Redis 的“对象空间”中的任何地方共享，并且可能在未处理它们的地方结束。 我们仅将它们作为键空间中的值来处理。 
+    // 人话：很多地方引用的话别处理，可能影响其他地方
+     if (o->refcount > 1) return o;
+
+    /* Check if we can represent this string as a long integer.
+     * Note that we are sure that a string larger than 20 chars is not
+     * representable as a 32 nor 64 bit integer. */
+    // 机翻：检查我们是否可以将此字符串表示为长整数。 请注意，我们确信大于 20 个字符的字符串不能表示为 32 位或 64 位整数。 
+    // 人话：判断是不是数字，转化后能否储存
+    len = sdslen(s);
+    if (len <= 20 && string2l(s,len,&value)) {
+        /* This object is encodable as a long. Try to use a shared object.
+         * Note that we avoid using shared integers when maxmemory is used
+         * because every object needs to have a private LRU field for the LRU
+         * algorithm to work well. */
+        // 机翻：此对象可编码为 long。 尝试使用共享对象。 请注意，当使用 maxmemory 时，我们避免使用共享整数，因为每个对象都需要有一个私有的 LRU 字段才能使 LRU 算法正常工作。 
+        //如果配置了server.maxmemory，并使用了不支持共享数据的淘汰算法（LRU，LFU），不能使用共享数据，。只有每个数据都存在edisObject.lru属性才可以计算。
+        if ((server.maxmemory == 0 ||
+            !(server.maxmemory_policy & MAXMEMORY_FLAG_NO_SHARED_INTEGERS)) &&
+            value >= 0 &&
+            value < OBJ_SHARED_INTEGERS)
+        {
+            // 减少o的引用
+            decrRefCount(o);
+            // shared.integers是redis共享数据，保存0~9999，启动时创建
+            // 增加shard的引用
+            incrRefCount(shared.integers[value]);
+            return shared.integers[value];
+        } else {
+            if (o->encoding == OBJ_ENCODING_RAW) {
+                //OBJ_ENCODING_RAW redisObject和sdshdr分开储存，可以直接替换值
+                sdsfree(o->ptr);//释放指针
+                o->encoding = OBJ_ENCODING_INT;// 修改encoding
+                o->ptr = (void*) value;//写入新值
+                return o;
+            } else if (o->encoding == OBJ_ENCODING_EMBSTR) {
+                // 减少o引用，返回一个新的创建的值，encoding==OBJ_ENCODING_INT，并且ptr指向long long或long
+                decrRefCount(o);
+                return createStringObjectFromLongLongForValue(value);
+            }
+        }
+    }
+
+    /* If the string is small and is still RAW encoded,
+     * try the EMBSTR encoding which is more efficient.
+     * In this representation the object and the SDS string are allocated
+     * in the same chunk of memory to save space and cache misses. */
+    //如果字符串很小并且仍然是 RAW 编码，请尝试更有效的 EMBSTR 编码。 在这种表示中，对象和 SDS 字符串被分配在同一块内存中，以节省空间和缓存未命中。 
+    //人话：将分块内存改为占用小的连续内存
+    if (len <= OBJ_ENCODING_EMBSTR_SIZE_LIMIT) {
+        robj *emb;
+
+        if (o->encoding == OBJ_ENCODING_EMBSTR) return o;
+        emb = createEmbeddedStringObject(s,sdslen(s));
+        decrRefCount(o);
+        return emb;
+    }
+
+    /* We can't encode the object...
+     *
+     * Do the last try, and at least optimize the SDS string inside
+     * the string object to require little space, in case there
+     * is more than 10% of free space at the end of the SDS string.
+     *
+     * We do that only for relatively large strings as this branch
+     * is only entered if the length of the string is greater than
+     * OBJ_ENCODING_EMBSTR_SIZE_LIMIT. */
+    // 我们无法对对象进行编码...做最后一次尝试，至少优化字符串对象内部的 SDS 字符串，使其占用空间很小，以防 SDS 字符串末尾有超过 10% 的可用空间。我们仅对相对较大的字符串执行此操作，因为仅当字符串的长度大于 OBJ_ENCODING_EMBSTR_SIZE_LIMIT 时才会进入此分支。 
+    // 人话：歇逼了，现在依然是raw的编码，想不出其他方法再转换，只能试试减少sdshdr内存占用
+    trimStringObjectIfNeeded(o);
+
+    /* Return the original object. */
+    return o;
+}
+```
+
+string的实现：t_string.c
+
+redis命令映射关系：server.c/redisConmmandTable
+
+```shell
+
+# 不同编码的字符串
+localhost:6379> SET msg "hello world"
+OK
+localhost:6379> Set Introduction "Redis is an open source (BSD licensed), in-memory data structure store, used as a database, cache and message broker. "
+OK
+localhost:6379> SET page 1
+OK
+localhost:6379> TYPE msg
+string
+localhost:6379> Type Introduction
+string
+localhost:6379> TYPE page
+string
+localhost:6379> OBJECT ENCODING Introduction
+"raw"
+localhost:6379> OBJECT ENCODING msg
+"embstr"
+localhost:6379> OBJECT ENCODING page
+"int"
+```
+
+## 第二章 列表
+
+### 2.1 ziplist
